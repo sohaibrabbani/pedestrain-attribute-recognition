@@ -84,6 +84,8 @@ class Track:
         self.gender_list = []
         self.age_group_list = []
 
+    # def get_attributes(self):
+    #     Counter(self.age_group_list).most_common(1)[0][0]
     def to_tlwh(self):
         """Get current position in bounding box format `(top left x, top left y,
         width, height)`.

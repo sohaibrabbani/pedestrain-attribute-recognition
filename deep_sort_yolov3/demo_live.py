@@ -15,6 +15,7 @@ import torch
 import torchvision.transforms as T
 from PIL import Image
 from flask import Flask, Response, render_template
+from flask_sqlalchemy import SQLAlchemy
 from imutils.video import VideoStream
 from keras import backend
 
@@ -26,7 +27,7 @@ from models.base_block import FeatClassifier, BaseClassifier
 from models.resnet import resnet50
 from tools import generate_detections as gdet
 from yolo import YOLO
-
+from deep_sort_yolov3.data_pipeline import init_db, create_db, insert_hourly_data
 values = ['Age1-16', 'Age17-30', 'Age31-45', 'Age46-60', 'Female', 'Male']
 
 backend.clear_session()
@@ -44,6 +45,17 @@ np.random.seed(100)
 COLORS = np.random.randint(0, 255, size=(200, 3),
                            dtype="uint8")
 
+yolo = YOLO()
+max_cosine_distance = 0.5
+nn_budget = None
+model_filename = 'model_data/market1501.pb'
+encoder = gdet.create_box_encoder(model_filename, batch_size=1)
+
+metric = nn_matching.NearestNeighborDistanceMetric("cosine", max_cosine_distance, nn_budget)
+tracker = Tracker(metric)
+app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://///home/deep/PycharmProjects/pedestrian-attribute-recognition/database.db'
+
 
 def model_init_par():
     # model
@@ -53,19 +65,7 @@ def model_init_par():
 
     # load
     checkpoint = torch.load(
-       '/home/deep/PycharmProjects/pedestrain-attribute-recognition/exp_result/custom/custom/img_model/ckpt_max.pth')
-    # unfolded load
-    # state_dict = checkpoint['state_dicts']
-    # new_state_dict = OrderedDict()
-    # for k, v in state_dict.items():
-    #     name = k[7:]
-    #     new_state_dict[name] = v
-    # model.load_state_dict(new_state_dict)
-    # one-liner load
-    # if torch.cuda.is_available():
-    #     model = torch.nn.DataParallel(model).cuda()
-    #     model.load_state_dict(checkpoint['state_dicts'])
-    # else:
+       '/home/deep/PycharmProjects/pedestrian-attribute-recognition/exp_result/custom/custom/img_model/ckpt_max.pth')
     model.load_state_dict({k.replace('module.', ''): v for k, v in checkpoint['state_dicts'].items()})
     # cuda eval
     model.cuda()
@@ -106,14 +106,6 @@ def demo_par(model, valid_transform, img):
             # txt += temp
             txt_res.append(temp)
     return txt_res, age_group, gender
-yolo = YOLO()
-max_cosine_distance = 0.5  # 余弦距离的控制阈值
-nn_budget = None
-model_filename = 'model_data/market1501.pb'
-encoder = gdet.create_box_encoder(model_filename, batch_size=1)
-
-metric = nn_matching.NearestNeighborDistanceMetric("cosine", max_cosine_distance, nn_budget)
-tracker = Tracker(metric)
 
 
 def get_tracking_info(frame):
@@ -135,32 +127,30 @@ def get_tracking_info(frame):
 
 
 def main():
-    start = time.time()
-    # Definition of the parameters
     global yolo, encoder, metric, tracker, nn_budget, max_cosine_distance
+
+    init_db(app)
+    create_db(app)
 
     counter = []
     # deep_sort
-
     writeVideo_flag = True
     # video_path = "./output/output.avi"
-    # video_capture = cv2.VideoCapture(args["input"])
+    video_capture = cv2.VideoCapture(args["input"])
     ip_camera = 'rtsp://admin:cvml@123@10.11.18.114'
     camera = 'rtsp://kics.uet:kics@12345@10.11.7.82:554/cam/realmonitor?channel=1&subtype=0'
-    video_capture = cv2.VideoCapture(ip_camera)
+    # video_capture = cv2.VideoCapture(ip_camera)
 
     if writeVideo_flag:
         # Define the codec and create VideoWriter object
         w = int(video_capture.get(3))
         h = int(video_capture.get(4))
         fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-        out = cv2.VideoWriter('/home/deep/PycharmProjects/pedestrian-attribute-recognition/output/' + "_" + '_output.avi', fourcc, 15,
+        out = cv2.VideoWriter('/home/deep/PycharmProjects/pedestrian-attribute-recognition/output/' + "_" + 'output.avi', fourcc, 15,
                               (w, h))
         list_file = open('detection.txt', 'w')
         frame_index = -1
-
     fps = 0.0
-
     model_par, valid_transform = model_init_par()
 
     hourly_timer = time.time()
@@ -169,15 +159,14 @@ def main():
     daily_attribute_dict = {"Male": 0, "Female": 0, 'Age1-16': 0, 'Age17-30': 0, 'Age31-45': 0, 'Age46-60': 0}
     daily_people_counter = set()
     hourly_people_counter = set()
-    while True:
+    current_date = datetime.datetime.now().date()
 
+    while True:
         ret, frame = video_capture.read()  # frame shape 640*480*3
         if ret != True:
             break
         t1 = time.time()
-
         image, boxs = get_tracking_info(frame)
-
         i = int(0)
         indexIDs = []
         attribute_dict = {"Male" : 0, "Female" : 0, 'Age1-16' : 0, 'Age17-30' : 0, 'Age31-45' : 0, 'Age46-60' : 0}
@@ -187,10 +176,9 @@ def main():
             indexIDs.append(int(track.track_id))
             counter.append(int(track.track_id))
             bbox = track.to_tlbr()
-            color = [int(c) for c in COLORS[indexIDs[i] % len(COLORS)]]
-            crop_img = image.crop([int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])])
             attributes = age_group = gender = None
             if track.hits <= 30:
+                crop_img = image.crop([int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])])
                 attributes, age_group, gender = demo_par(model_par, valid_transform, crop_img)
                 track.age_group_list.extend(age_group)
                 track.gender_list.extend(gender)
@@ -201,8 +189,7 @@ def main():
             else:
                 attributes = track.attributes
 
-            cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), (color), 3)
-            cv2.putText(frame, str(attributes), (int(bbox[0]), int(bbox[1] - 50)), 0, 5e-3 * 150, color, 2)
+            frame = draw_detections(attributes, bbox, frame, i, indexIDs)
 
             if not age_group and not gender:
                 age_group = Counter(track.age_group_list).most_common(1)[0]
@@ -233,7 +220,17 @@ def main():
         realtime_file.write(get_age_gender_text(count, attribute_dict))
         realtime_file.close()
 
-        if int((current_time - hourly_timer)/3600) >= 1:
+        if int((current_time - hourly_timer)/60) >= 1:
+            current_hour = datetime.time(hour=datetime.datetime.now().hour)
+            insert_hourly_data(app, datetime.datetime.today(),
+                               current_hour,
+                               str(attribute_dict["Male"]),
+                               str(attribute_dict["Female"]),
+                               (attribute_dict["Male"] + attribute_dict["Female"]),
+                               str(attribute_dict["Age1-16"]),
+                               str(attribute_dict["Age17-30"]),
+                               str(attribute_dict["Age31-45"]),
+                               str(attribute_dict["Age46-60"]))
             hourly_timer = current_time
             hourly_file = open("hourly.txt", "a")
             hourly_file.write(
@@ -272,6 +269,13 @@ def main():
     cv2.destroyAllWindows()
 
 
+def draw_detections(attributes, bbox, frame, i, indexIDs):
+    color = [int(c) for c in COLORS[indexIDs[i] % len(COLORS)]]
+    cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), (color), 3)
+    cv2.putText(frame, str(attributes), (int(bbox[0]), int(bbox[1] - 50)), 0, 5e-3 * 150, color, 2)
+    return frame
+
+
 def update_attribute_count(id, counter, attr_dict, age, gender):
     if id not in counter:
         attr_dict[age] += 1
@@ -289,8 +293,6 @@ def get_age_gender_text(total_count, attribute_dict):
             "\tAge31-45:  " + str(attribute_dict["Age31-45"]) +
             "\tAge46-60:  " + str(attribute_dict["Age46-60"]) + "\n")
 
-outputFrame = None
-app = Flask(__name__)
 
 
 @app.route('/')
