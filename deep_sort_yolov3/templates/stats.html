@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Stats</title>
+</head>
+<body>
+<form method="get">
+    <label for="date">Date:</label>
+    <input type="date" id="date" name="date"/>
+    <label for="time">Time (optional):</label>
+    <input type="time" id="time" name="time"/>
+    <button type="submit">Show</button>
+</form>
+{% if stats %}
+<table border="1">
+    <tr>
+        <th>Total</th>
+        <th>Male</th>
+        <th>Female</th>
+        <th>Age 1-16</th>
+        <th>Age 17-30</th>
+        <th>Age 31-45</th>
+        <th>Age 46-60</th>
+    </tr>
+    {% for stat in stats %}
+      <tr>
+        <td>{{stat.total_people}}</td>
+        <td>{{stat.male}}</td>
+        <td>{{stat.female}}</td>
+        <td>{{stat.age1_16}}</td>
+        <td>{{stat.age17_30}}</td>
+        <td>{{stat.age31_45}}</td>
+        <td>{{stat.age46_60}}</td>
+      </tr>
+    {%endfor%}
+</table>
+{% endif %}
+</body>
+</html>
